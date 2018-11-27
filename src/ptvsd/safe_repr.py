@@ -2,7 +2,9 @@
 # Licensed under the MIT License. See LICENSE in the project root
 # for license information.
 
+import contextlib
 import sys
+from _pydevd_bundle import pydevd_extension_api
 
 
 # Py3 compat - alias unicode to str, and xrange to range
@@ -307,3 +309,51 @@ class SafeRepr(object):
         yield obj_repr[:left_count]
         yield '...'
         yield obj_repr[-right_count:]
+
+
+class SafeReprPresentationProvider(pydevd_extension_api.StrPresentationProvider):
+    """
+    Computes string representation of Python values by delegating them
+    to SafeRepr.
+    """
+
+    def __init__(self):
+        self.set_format({})
+
+    def can_provide(self, type_object, type_name):
+        """Implements StrPresentationProvider."""
+        return True
+
+    def get_str(self, val):
+        """Implements StrPresentationProvider."""
+        return self._repr(val)
+
+    def set_format(self, fmt):
+        """
+        Use fmt for all future formatting operations done by this provider.
+        """
+        safe_repr = SafeRepr()
+        safe_repr.convert_to_hex = fmt.get('hex', False)
+        safe_repr.raw_value = fmt.get('rawString', False)
+        self._repr = safe_repr
+
+    @contextlib.contextmanager
+    def using_format(self, fmt):
+        """
+        Returns a context manager that invokes set_format(fmt) on enter,
+        and restores the old format on exit.
+        """
+        old_repr = self._repr
+        self.set_format(fmt)
+        yield
+        self._repr = old_repr
+
+    @classmethod
+    def get(self):
+        return self._instance
+
+
+SafeReprPresentationProvider._instance = SafeReprPresentationProvider()
+
+using_format = SafeReprPresentationProvider._instance.using_format
+

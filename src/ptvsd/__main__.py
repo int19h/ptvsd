@@ -5,7 +5,6 @@
 from __future__ import absolute_import, print_function, with_statement
 
 import os.path
-import pydevd
 import runpy
 import sys
 
@@ -33,7 +32,9 @@ if __name__ == '__main__' and 'ptvsd' not in sys.modules:
     import ptvsd # noqa
     del sys.path[0]
 
+import pydevd
 
+import ptvsd.comm
 import ptvsd.options
 import ptvsd.version
 
@@ -174,16 +175,16 @@ def parse(args):
 
 
 def run_file():
-    ptvsd.enable_attach()
+    ptvsd.comm.setup()
     runpy.run_path(ptvsd.options.target)
 
 def run_module():
-    ptvsd.enable_attach()
+    ptvsd.comm.setup()
     runpy.run_module(ptvsd.options.target)
 
 def run_code():
     code = compile(ptvsd.options.target, '<string>', 'exec')
-    ptvsd.enable_attach()
+    ptvsd.comm.setup()
     eval(code, {})
 
 def attach_to_pid():

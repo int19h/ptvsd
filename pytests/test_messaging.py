@@ -12,6 +12,7 @@ import socket
 import threading
 import time
 
+import ptvsd.comm
 from ptvsd.messaging import JsonIOStream, JsonMessageChannel, RequestFailure
 from .helpers.messaging import JsonMemoryStream, LoggingJsonStream
 
@@ -40,7 +41,7 @@ class TestJsonIOStream(object):
         for expected_message in self.MESSAGES:
             message = stream.read_json()
             assert message == expected_message
-        with pytest.raises(EOFError):
+        with pytest.raises(ptvsd.comm.ConnectionError):
             stream.read_json()
 
     def test_write(self):
@@ -63,7 +64,7 @@ class TestJsonMemoryStream(object):
         for expected_message in self.MESSAGES:
             message = stream.read_json()
             assert message == expected_message
-        with pytest.raises(EOFError):
+        with pytest.raises(ptvsd.comm.ConnectionError):
             stream.read_json()
 
     def test_write(self):

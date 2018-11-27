@@ -17,23 +17,20 @@ import socket
 import sys
 import threading
 import traceback
+import warnings
+from xml.sax import SAXParseException
+from xml.sax.saxutils import unescape as xml_unescape
 
-try:
-    import urllib
-    urllib.unquote
-except Exception:
-    import urllib.parse as urllib
 try:
     from functools import reduce
 except Exception:
     pass
+
 try:
     import queue
 except ImportError:
     import Queue as queue
-import warnings
-from xml.sax import SAXParseException
-from xml.sax.saxutils import unescape as xml_unescape
+
 
 import _pydevd_bundle.pydevd_comm as pydevd_comm  # noqa
 import _pydevd_bundle.pydevd_comm_constants as pydevd_comm_constants  # noqa
@@ -53,6 +50,8 @@ from ptvsd.pathutils import PathUnNormcase  # noqa
 from ptvsd.safe_repr import SafeRepr  # noqa
 from ptvsd.version import __version__  # noqa
 from ptvsd.socket import TimeoutError  # noqa
+from ptvsd.util import unquote
+from ptvsd.compat import queue
 
 WAIT_FOR_THREAD_FINISH_TIMEOUT = 1  # seconds
 
@@ -70,11 +69,8 @@ EXCEPTION_REASONS = {
 debug = _util.debug
 debugger_attached = threading.Event()
 
-#def ipcjson_trace(s):
-#    print(s)
-#ipcjson._TRACE = ipcjson_trace
 
-#completion types.
+# Completion types.
 TYPE_IMPORT = '0'
 TYPE_CLASS = '1'
 TYPE_FUNCTION = '2'
@@ -197,20 +193,6 @@ if hasattr(site, 'getsitepackages'):
         STDLIB_PATH_PREFIXES.append(os.path.normcase(site_paths))
 
 
-class UnsupportedPyDevdCommandError(Exception):
-
-    def __init__(self, cmdid):
-        msg = 'unsupported pydevd command ' + str(cmdid)
-        super(UnsupportedPyDevdCommandError, self).__init__(msg)
-        self.cmdid = cmdid
-
-
-def unquote(s):
-    if s is None:
-        return None
-    return urllib.unquote(s)
-
-
 def unquote_xml_path(s):
     """XML unescape after url unquote. This reverses the escapes and quotes done
     by pydevd.
@@ -312,160 +294,6 @@ class IDMap(object):
             ids = list(self._vscode_to_pydevd.keys())
         return ids
 
-
-class PydevdSocket(object):
-    """A dummy socket-like object for communicating with pydevd.
-
-    It parses pydevd messages and redirects them to the provided handler
-    callback.  It also provides an interface to send notifications and
-    requests to pydevd; for requests, the reply can be asynchronously
-    awaited.
-    """
-
-    def __init__(self, handle_msg, handle_close, getpeername, getsockname):
-        #self.log = open('pydevd.log', 'w')
-        self._handle_msg = handle_msg
-        self._handle_close = handle_close
-        self._getpeername = getpeername
-        self._getsockname = getsockname
-
-        self.lock = threading.Lock()
-        self.seq = 1000000000
-        self.pipe_r, self.pipe_w = os.pipe()
-        self.requests = {}
-
-        self._closed = False
-        self._closing = False
-
-    def close(self):
-        """Mark the socket as closed and release any resources."""
-        if self._closing:
-            return
-
-        with self.lock:
-            if self._closed:
-                return
-            self._closing = True
-
-            if self.pipe_w is not None:
-                pipe_w = self.pipe_w
-                self.pipe_w = None
-                try:
-                    os.close(pipe_w)
-                except OSError as exc:
-                    if exc.errno != errno.EBADF:
-                        raise
-            if self.pipe_r is not None:
-                pipe_r = self.pipe_r
-                self.pipe_r = None
-                try:
-                    os.close(pipe_r)
-                except OSError as exc:
-                    if exc.errno != errno.EBADF:
-                        raise
-            self._handle_close()
-            self._closed = True
-            self._closing = False
-
-    def shutdown(self, mode):
-        """Called when pydevd has stopped."""
-        # noop
-
-    def getpeername(self):
-        """Return the remote address to which the socket is connected."""
-        return self._getpeername()
-
-    def getsockname(self):
-        """Return the socket's own address."""
-        return self._getsockname()
-
-    def recv(self, count):
-        """Return the requested number of bytes.
-
-        This is where the "socket" sends requests to pydevd.  The data
-        must follow the pydevd line protocol.
-        """
-        pipe_r = self.pipe_r
-        if pipe_r is None:
-            return b''
-        data = os.read(pipe_r, count)
-        #self.log.write('>>>[' + data.decode('utf8') + ']\n\n')
-        #self.log.flush()
-        return data
-
-    def recv_into(self, buf):
-        pipe_r = self.pipe_r
-        if pipe_r is None:
-            return 0
-        return os.readv(pipe_r, [buf])
-
-    # In Python 2, we must unquote before we decode, because UTF-8 codepoints
-    # are encoded first and then quoted as individual bytes. In Python 3,
-    # however, we just get a properly UTF-8-encoded string.
-    if sys.version_info < (3,):
-        @staticmethod
-        def _decode_and_unquote(data):
-            return unquote(data).decode('utf8')
-    else:
-        @staticmethod
-        def _decode_and_unquote(data):
-            return unquote(data.decode('utf8'))
-
-    def send(self, data):
-        """Handle the given bytes.
-
-        This is where pydevd sends responses and events.  The data will
-        follow the pydevd line protocol.
-        """
-        result = len(data)
-        data = self._decode_and_unquote(data)
-        #self.log.write('<<<[' + data + ']\n\n')
-        #self.log.flush()
-        cmd_id, seq, args = data.split('\t', 2)
-        cmd_id = int(cmd_id)
-        seq = int(seq)
-        _util.log_pydevd_msg(cmd_id, seq, args, inbound=True)
-        with self.lock:
-            loop, fut = self.requests.pop(seq, (None, None))
-        if fut is None:
-            self._handle_msg(cmd_id, seq, args)
-        else:
-            loop.call_soon_threadsafe(fut.set_result, (cmd_id, seq, args))
-        return result
-
-    sendall = send
-
-    def makefile(self, *args, **kwargs):
-        """Return a file-like wrapper around the socket."""
-        return os.fdopen(self.pipe_r)
-
-    def make_packet(self, cmd_id, args):
-        # TODO: docstring
-        with self.lock:
-            seq = self.seq
-            self.seq += 1
-        s = u'{}\t{}\t{}\n'.format(cmd_id, seq, args)
-        return seq, s
-
-    def pydevd_notify(self, cmd_id, args):
-        # TODO: docstring
-        if self.pipe_w is None:
-            raise EOFError
-        seq, s = self.make_packet(cmd_id, args)
-        _util.log_pydevd_msg(cmd_id, seq, args, inbound=False)
-        os.write(self.pipe_w, s.encode('utf8'))
-
-    def pydevd_request(self, loop, cmd_id, args):
-        # TODO: docstring
-        if self.pipe_w is None:
-            raise EOFError
-        seq, s = self.make_packet(cmd_id, args)
-        _util.log_pydevd_msg(cmd_id, seq, args, inbound=False)
-        fut = loop.create_future()
-        with self.lock:
-            self.requests[seq] = loop, fut
-            os.write(self.pipe_w, s.encode('utf8'))
-        return fut
 
 
 class ExceptionsManager(object):
@@ -838,172 +666,6 @@ def _parse_debug_options(opts):
     return options
 
 
-########################
-# the message processor
-
-# TODO: Embed instead of extend (inheritance -> composition).
-
-
-class VSCodeMessageProcessorBase(ipcjson.SocketIO, ipcjson.IpcChannel):
-    """The base class for VSC message processors."""
-
-    def __init__(self, socket, notify_closing,
-                 timeout=None, logfile=None, own_socket=False
-                 ):
-        super(VSCodeMessageProcessorBase, self).__init__(
-            socket=socket,
-            own_socket=False,
-            timeout=timeout,
-            logfile=logfile,
-        )
-        self.socket = socket
-        self._own_socket = own_socket
-        self._notify_closing = notify_closing
-
-        self.server_thread = None
-        self._closing = False
-        self._closed = False
-        self.readylock = threading.Lock()
-        self.readylock.acquire()  # Unlock at the end of start().
-
-        self._connected = threading.Lock()
-        self._listening = None
-        self._connlock = threading.Lock()
-
-    @property
-    def connected(self):  # may send responses/events
-        with self._connlock:
-            return _util.is_locked(self._connected)
-
-    @property
-    def closed(self):
-        return self._closed or self._closing
-
-    @property
-    def listening(self):
-        # TODO: must be disconnected?
-        with self._connlock:
-            if self._listening is None:
-                return False
-            return _util.is_locked(self._listening)
-
-    def wait_while_connected(self, timeout=None):
-        """Wait until the client socket is disconnected."""
-        with self._connlock:
-            lock = self._listening
-        _util.lock_wait(lock, timeout)  # Wait until no longer connected.
-
-    def wait_while_listening(self, timeout=None):
-        """Wait until no longer listening for incoming messages."""
-        with self._connlock:
-            lock = self._listening
-            if lock is None:
-                raise RuntimeError('not listening yet')
-        _util.lock_wait(lock, timeout)  # Wait until no longer listening.
-
-    def start(self, threadname):
-        # event loop
-        self._start_event_loop()
-
-        # VSC msg processing loop
-        def process_messages():
-            self.readylock.acquire()
-            with self._connlock:
-                self._listening = threading.Lock()
-            try:
-                self.process_messages()
-            except (EOFError, TimeoutError):
-                debug('client socket closed')
-                with self._connlock:
-                    _util.lock_release(self._listening)
-                    _util.lock_release(self._connected)
-                self.close()
-            except socket.error as exc:
-                if exc.errno == errno.ECONNRESET:
-                    debug('client socket forcibly closed')
-                    with self._connlock:
-                        _util.lock_release(self._listening)
-                        _util.lock_release(self._connected)
-                    self.close()
-                else:
-                    raise exc
-        self.server_thread = _util.new_hidden_thread(
-            target=process_messages,
-            name=threadname,
-        )
-        self.server_thread.start()
-
-        # special initialization
-        debug('sending output')
-        self.send_event(
-            'output',
-            category='telemetry',
-            output='ptvsd',
-            data={'version': __version__},
-        )
-        debug('output sent')
-        self.readylock.release()
-
-    def close(self):
-        """Stop the message processor and release its resources."""
-        if self.closed:
-            return
-        self._closing = True
-        debug('raw closing')
-
-        self._notify_closing()
-        # Close the editor-side socket.
-        self._stop_vsc_message_loop()
-
-        # Ensure that the connection is marked as closed.
-        with self._connlock:
-            _util.lock_release(self._listening)
-            _util.lock_release(self._connected)
-        self._closed = True
-
-    # VSC protocol handlers
-
-    def send_error_response(self, request, message=None):
-        self.send_response(
-            request,
-            success=False,
-            message=message
-        )
-
-    # internal methods
-
-    def _set_disconnected(self):
-        with self._connlock:
-            _util.lock_release(self._connected)
-
-    def _wait_for_server_thread(self):
-        if self.server_thread is None:
-            return
-        if not self.server_thread.is_alive():
-            return
-        self.server_thread.join(WAIT_FOR_THREAD_FINISH_TIMEOUT)
-
-    def _stop_vsc_message_loop(self):
-        self.set_exit()
-        self._stop_event_loop()
-        if self.socket is not None and self._own_socket:
-            try:
-                self.socket.shutdown(socket.SHUT_RDWR)
-                self.socket.close()
-                self._set_disconnected()
-            except Exception:
-                # TODO: log the error
-                pass
-
-    # methods for subclasses to override
-
-    def _start_event_loop(self):
-        pass
-
-    def _stop_event_loop(self):
-        pass
-
-
 INITIALIZE_RESPONSE = dict(
     supportsCompletionsRequest=True,
     supportsConditionalBreakpoints=True,
@@ -1033,94 +695,23 @@ INITIALIZE_RESPONSE = dict(
     ],
 )
 
+# These are needed to handle behavioral differences between VS and VSC
+# https://github.com/Microsoft/VSDebugAdapterHost/wiki/Differences-between-Visual-Studio-Code-and-the-Visual-Studio-Debug-Adapter-Host # noqa
+# VS expects a single stopped event in a multi-threaded scenario.
+_client_id = None
 
-class VSCLifecycleMsgProcessor(VSCodeMessageProcessorBase):
-    """Handles adapter lifecycle messages of the VSC debugger protocol."""
 
-    EXITWAIT = 1
 
-    def __init__(self, socket,
-                 notify_disconnecting, notify_closing,
-                 notify_launch=None, notify_ready=None,
-                 timeout=None, logfile=None, debugging=True,
-                 ):
-        super(VSCLifecycleMsgProcessor, self).__init__(
-            socket=socket,
-            notify_closing=notify_closing,
-            timeout=timeout,
-            logfile=logfile,
-        )
-        self._notify_launch = notify_launch or NOOP
-        self._notify_ready = notify_ready or NOOP
-        self._notify_disconnecting = notify_disconnecting
 
-        self._stopped = False
+# Adapter state
+start_reason = None
+debug_options = {}
+_exitlock = threading.Lock()
+_exitlock.acquire()  # released in handle_exiting()
+_exiting = False
 
-        # These are needed to handle behavioral differences between VS and VSC
-        # https://github.com/Microsoft/VSDebugAdapterHost/wiki/Differences-between-Visual-Studio-Code-and-the-Visual-Studio-Debug-Adapter-Host # noqa
-        # VS expects a single stopped event in a multi-threaded scenario.
-        self._client_id = None
 
-        # adapter state
-        self.start_reason = None
-        self.debug_options = {}
-        self._statelock = threading.Lock()
-        self._debugging = debugging
-        self._debuggerstopped = False
-        self._restart_debugger = False
-        self._exitlock = threading.Lock()
-        self._exitlock.acquire()  # released in handle_exiting()
-        self._exiting = False
-
-    def handle_debugger_stopped(self, wait=None):
-        """Deal with the debugger exiting."""
-        # Notify the editor that the debugger has stopped.
-        if not self._debugging:
-            # TODO: Fail?  If this gets called then we must be debugging.
-            return
-
-        # We run this in a thread to allow handle_exiting() to be called
-        # at the same time.
-        def stop():
-            if wait is not None:
-                wait()
-            # Since pydevd is embedded in the debuggee process, always
-            # make sure the exited event is sent first.
-            self._wait_until_exiting(self.EXITWAIT)
-            self._ensure_debugger_stopped()
-        t = _util.new_hidden_thread(
-            target=stop,
-            name='stopping',
-            daemon=False,
-        )
-        t.start()
-
-    def handle_exiting(self, exitcode=None, wait=None):
-        """Deal with the debuggee exiting."""
-        with self._statelock:
-            if self._exiting:
-                return
-            self._exiting = True
-
-        # Notify the editor that the "debuggee" (e.g. script, app) exited.
-        self.send_event('exited', exitCode=exitcode or 0)
-
-        self._waiting = True
-        if wait is not None:
-            normal, abnormal = self._wait_options()
-            cfg = (normal and not exitcode) or (abnormal and exitcode)
-            # This must be done before we send a disconnect response
-            # (which implies before we close the client socket).
-            wait(cfg)
-
-        # If we are exiting then pydevd must have stopped.
-        self._ensure_debugger_stopped()
-
-        if self._exitlock is not None:
-            _util.lock_release(self._exitlock)
-
-    # VSC protocol handlers
-
+class DapHandlers(object):
     def on_initialize(self, request, args):
         self._client_id = args.get('clientID', None)
         self._restart_debugger = False

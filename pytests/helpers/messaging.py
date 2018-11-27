@@ -7,6 +7,8 @@ from __future__ import print_function, with_statement, absolute_import
 import itertools
 import json
 
+import ptvsd.comm
+
 from . import print, colors
 
 
@@ -29,7 +31,7 @@ class JsonMemoryStream(object):
         try:
             return next(self.input)
         except StopIteration:
-            raise EOFError
+            raise ptvsd.comm.ConnectionError
 
     def write_json(self, value):
         self.output.append(value)

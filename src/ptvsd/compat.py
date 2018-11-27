@@ -26,3 +26,8 @@ try:
     xrange = builtins.xrange
 except AttributeError:
     xrange = builtins.range
+
+try:
+    from functools import reduce # noqa
+except NameError:
+    reduce = builtins.reduce
