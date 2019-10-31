@@ -96,6 +96,17 @@ def test_multiprocessing(pyfile, target, run, start_method):
         with run(parent_session, target(code_to_debug, args=[start_method])):
             pass
 
+        if platform.system() != "Windows" and start_method == "spawn":
+            # On non-Windows platforms, multiprocessing starts a helper process to
+            # manage shared resources. We need to attach to it to unblock it, but
+            # since there's no need to debug it, we immediately disconnect without
+            # terminating it.
+            helper_config = parent_session.wait_for_next_event("ptvsd_attach")
+            with debug.Session(helper_config) as helper_session:
+                helper_session.expected_exit_code = None
+                with helper_session.start():
+                    pass
+
         expected_child_config = dict(parent_session.config)
         expected_child_config.update(
             {

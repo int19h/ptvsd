@@ -239,7 +239,7 @@ class Session(object):
                     pass
             self.disconnect(force=True)
 
-        if self.adapter is not None:
+        if self.adapter is not None and self.expected_exit_code is not None:
             log.info(
                 "Waiting for {0} with PID={1} to exit.",
                 self.adapter_id,
