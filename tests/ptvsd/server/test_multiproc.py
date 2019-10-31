@@ -53,7 +53,7 @@ def test_multiprocessing(pyfile, target, run, start_method):
             assert what == "grandchild_pid"
             backchannel.send(grandchild_pid)
 
-            assert backchannel.receive() == "continue"
+            assert backchannel.receive() == "exit!"
             q.put("exit!")
             p.join()
 
@@ -128,6 +128,9 @@ def test_multiprocessing(pyfile, target, run, start_method):
             with child_session.start():
                 pass
 
+            child_pid = parent_backchannel.receive()
+            assert child_config["subProcessId"] == child_pid
+
             expected_grandchild_config = dict(child_session.config)
             expected_grandchild_config.update(
                 {
@@ -140,12 +143,16 @@ def test_multiprocessing(pyfile, target, run, start_method):
 
             grandchild_config = child_session.wait_for_next_event("ptvsd_attach")
             assert grandchild_config == expected_grandchild_config
+            child_session.proceed()
 
             with debug.Session(grandchild_config) as grandchild_session:
                 with grandchild_session.start():
                     pass
 
-                parent_backchannel.send("continue")
+                grandchild_pid = parent_backchannel.receive()
+                assert grandchild_config["subProcessId"] == grandchild_pid
+
+                parent_backchannel.send("exit!")
 
 
 @pytest.mark.timeout(30)
