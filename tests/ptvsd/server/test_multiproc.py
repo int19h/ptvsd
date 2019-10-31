@@ -90,27 +90,26 @@ def test_multiprocessing(pyfile, target, run, start_method):
                 q.close()
                 a.close()
 
+    # On non-Windows platforms, multiprocessing with "spawn" starts a helper process
+    # to manage shared resources. We need to attach to it to unblock it, but since
+    # there's no need to debug it, we immediately disconnect without terminating it.
+    def skip_semaphore_tracker(session):
+        if platform.system() == "Windows" or start_method != "spawn":
+            return
+
+        helper_config = session.wait_for_next_event("ptvsd_attach")
+        session.proceed()
+
+        with debug.Session(helper_config) as semaphore_tracker_session:
+            semaphore_tracker_session.expected_exit_code = None
+            with semaphore_tracker_session.start():
+                pass
+
     with debug.Session() as parent_session:
         parent_backchannel = parent_session.open_backchannel()
 
         with run(parent_session, target(code_to_debug, args=[start_method])):
             pass
-
-        # On non-Windows platforms, multiprocessing with "spawn" starts a helper
-        # process to manage shared resources. We need to attach to it to unblock it
-        # but since there's no need to debug it, we immediately disconnect without
-        # terminating it.
-        def skip_semaphore_tracker():
-            if platform.system() == "Windows" or start_method != "spawn":
-                return
-
-            helper_config = parent_session.wait_for_next_event("ptvsd_attach")
-            parent_session.proceed()
-
-            with debug.Session(helper_config) as semaphore_tracker_session:
-                semaphore_tracker_session.expected_exit_code = None
-                with semaphore_tracker_session.start():
-                    pass
 
         expected_child_config = dict(parent_session.config)
         expected_child_config.update(
@@ -122,7 +121,7 @@ def test_multiprocessing(pyfile, target, run, start_method):
             }
         )
 
-        skip_semaphore_tracker()
+        skip_semaphore_tracker(parent_session)
         child_config = parent_session.wait_for_next_event("ptvsd_attach")
         assert child_config == expected_child_config
         parent_session.proceed()
@@ -144,7 +143,7 @@ def test_multiprocessing(pyfile, target, run, start_method):
                 }
             )
 
-            skip_semaphore_tracker()
+            skip_semaphore_tracker(child_session)
             grandchild_config = child_session.wait_for_next_event("ptvsd_attach")
             assert grandchild_config == expected_grandchild_config
             child_session.proceed()
