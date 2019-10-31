@@ -101,7 +101,10 @@ def test_multiprocessing(pyfile, target, run, start_method):
             # manage shared resources. We need to attach to it to unblock it, but
             # since there's no need to debug it, we immediately disconnect without
             # terminating it.
+
             helper_config = parent_session.wait_for_next_event("ptvsd_attach")
+            parent_session.proceed()
+
             with debug.Session(helper_config) as helper_session:
                 helper_session.expected_exit_code = None
                 with helper_session.start():
