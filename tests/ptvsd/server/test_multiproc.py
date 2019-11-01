@@ -108,11 +108,8 @@ def test_multiprocessing(pyfile, target, run, start_method):
             }
         )
 
-        child_config = parent_session.wait_for_subprocess(child_pid)
-        assert child_config == expected_child_config
-        parent_session.proceed()
-
-        with debug.Session(child_config) as child_session:
+        with parent_session.wait_for_subprocess(child_pid) as child_session:
+            assert child_session.config == expected_child_config
             with child_session.start():
                 pass
 
@@ -127,11 +124,10 @@ def test_multiprocessing(pyfile, target, run, start_method):
                 }
             )
 
-            grandchild_config = child_session.wait_for_subprocess(grandchild_pid)
-            assert grandchild_config == expected_grandchild_config
-            child_session.proceed()
-
-            with debug.Session(grandchild_config) as grandchild_session:
+            with child_session.wait_for_subprocess(
+                grandchild_pid
+            ) as grandchild_session:
+                assert grandchild_session.config == expected_grandchild_config
                 with grandchild_session.start():
                     pass
                 parent_backchannel.send("exit!")

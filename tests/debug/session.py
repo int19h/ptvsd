@@ -746,6 +746,7 @@ class Session(object):
     def wait_for_subprocess(self, pid):
         while True:
             config = self.wait_for_next_event("ptvsd_attach")
+            self.proceed()
             if config["subProcessId"] == pid:
                 return Session(config)
 
