@@ -762,6 +762,11 @@ class Session(object):
 
     def wait_for_exit(self):
         if self.debuggee is not None:
+            log.info(
+                "Waiting for {0} with PID={1} to exit...",
+                self.debuggee_id,
+                self.debuggee.pid,
+            )
             try:
                 self.debuggee.wait()
             except Exception:
