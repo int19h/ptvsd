@@ -745,9 +745,9 @@ class Session(object):
 
     def wait_for_subprocess(self, pid):
         while True:
-            config = self.wait_for_next_subprocess()
+            config = self.wait_for_next_event("ptvsd_attach")
             if config["subProcessId"] == pid:
-                return config
+                return Session(config)
 
             # It's not the subprocess we were waiting for, but we still need to attach
             # to it to allow it to start executing, and then immediately detach.
