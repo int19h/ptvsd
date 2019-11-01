@@ -744,18 +744,22 @@ class Session(object):
         return Session(self.wait_for_next_event("ptvsd_attach"))
 
     def wait_for_subprocess(self, pid):
+        log.info("Waiting for subprocess with PID={0}...", pid)
         while True:
             config = self.wait_for_next_event("ptvsd_attach")
             self.proceed()
-            if config["subProcessId"] == pid:
+            sub_pid = config["subProcessId"]
+            if sub_pid == pid:
                 return Session(config)
 
             # It's not the subprocess we were waiting for, but we still need to attach
             # to it to allow it to start executing, and then immediately detach.
+            log.info("Unblocking unrelated subprocess with PID={0}.", sub_pid)
             with Session(config) as session:
                 session.expected_exit_code = None  # don't wait for exit on detach
                 with session.start():
                     pass
+            log.info("Unblocked unrelated subprocess with PID={0}.", sub_pid)
 
     def wait_for_disconnect(self):
         self.timeline.wait_until_realized(timeline.Mark("disconnect"), freeze=True)
