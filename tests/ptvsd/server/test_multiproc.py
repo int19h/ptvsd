@@ -43,12 +43,12 @@ def test_multiprocessing(pyfile, target, run, start_method):
             p.start()
             print("child spawned")
             backchannel.send(p.pid)
-            assert q.get() == "child", p.pid
+            assert a.get() == ("child", p.pid)
 
             q.put("spawn!")
             grandchild_pid = a.get()
             backchannel.send(grandchild_pid)
-            assert a.get() == "grandchild", grandchild_pid
+            assert a.get() == ("grandchild", grandchild_pid)
 
             assert backchannel.receive() == "exit!"
             q.put("exit!")
