@@ -42,37 +42,38 @@ def test_multiprocessing(pyfile, target, run, start_method):
             p = multiprocessing.Process(target=child, args=(q, a))
             p.start()
             print("child spawned")
+            backchannel.send(p.pid)
+            assert q.get() == "child", p.pid
 
-            q.put("child_pid?")
-            what, child_pid = a.get()
-            assert what == "child_pid"
-            backchannel.send(child_pid)
-
-            q.put("grandchild_pid?")
-            what, grandchild_pid = a.get()
-            assert what == "grandchild_pid"
+            q.put("spawn!")
+            grandchild_pid = a.get()
             backchannel.send(grandchild_pid)
+            assert q.get() == "grandchild", grandchild_pid
 
             assert backchannel.receive() == "exit!"
             q.put("exit!")
+
+            print("waiting for child")
             p.join()
 
         def child(q, a):
             print("entering child")
-            assert q.get() == "child_pid?"
-            a.put(("child_pid", os.getpid()))
+            a.put(("child", os.getpid()))
 
-            print("spawning child of child")
+            assert q.get() == "spawn!"
+            print("spawning grandchild")
             p = multiprocessing.Process(target=grandchild, args=(q, a))
             p.start()
+            a.put(p.pid)
+
+            print("waiting for grandchild")
             p.join()
 
             print("leaving child")
 
         def grandchild(q, a):
             print("entering grandchild")
-            assert q.get() == "grandchild_pid?"
-            a.put(("grandchild_pid", os.getpid()))
+            a.put(("grandchild", os.getpid()))
 
             assert q.get() == "exit!"
             print("leaving grandchild")
@@ -90,39 +91,24 @@ def test_multiprocessing(pyfile, target, run, start_method):
                 q.close()
                 a.close()
 
-    # On non-Windows platforms, multiprocessing with "spawn" starts a helper process
-    # to manage shared resources. We need to attach to it to unblock it, but since
-    # there's no need to debug it, we immediately disconnect without terminating it.
-    def skip_semaphore_tracker(session):
-        if platform.system() == "Windows" or start_method != "spawn":
-            return
-
-        helper_config = session.wait_for_next_event("ptvsd_attach")
-        session.proceed()
-
-        with debug.Session(helper_config) as semaphore_tracker_session:
-            semaphore_tracker_session.expected_exit_code = None
-            with semaphore_tracker_session.start():
-                pass
-
     with debug.Session() as parent_session:
         parent_backchannel = parent_session.open_backchannel()
 
         with run(parent_session, target(code_to_debug, args=[start_method])):
             pass
 
+        child_pid = parent_backchannel.receive()
         expected_child_config = dict(parent_session.config)
         expected_child_config.update(
             {
                 "request": "attach",
-                "subProcessId": some.int,
+                "subProcessId": child_pid,
                 "host": some.str,
                 "port": some.int,
             }
         )
 
-        skip_semaphore_tracker(parent_session)
-        child_config = parent_session.wait_for_next_event("ptvsd_attach")
+        child_config = parent_session.wait_for_subprocess(child_pid)
         assert child_config == expected_child_config
         parent_session.proceed()
 
@@ -130,31 +116,24 @@ def test_multiprocessing(pyfile, target, run, start_method):
             with child_session.start():
                 pass
 
-            child_pid = parent_backchannel.receive()
-            assert child_config["subProcessId"] == child_pid
-
+            grandchild_pid = parent_backchannel.receive()
             expected_grandchild_config = dict(child_session.config)
             expected_grandchild_config.update(
                 {
                     "request": "attach",
-                    "subProcessId": some.int,
+                    "subProcessId": grandchild_pid,
                     "host": some.str,
                     "port": some.int,
                 }
             )
 
-            skip_semaphore_tracker(child_session)
-            grandchild_config = child_session.wait_for_next_event("ptvsd_attach")
+            grandchild_config = child_session.wait_for_subprocess(grandchild_pid)
             assert grandchild_config == expected_grandchild_config
             child_session.proceed()
 
             with debug.Session(grandchild_config) as grandchild_session:
                 with grandchild_session.start():
                     pass
-
-                grandchild_pid = parent_backchannel.receive()
-                assert grandchild_config["subProcessId"] == grandchild_pid
-
                 parent_backchannel.send("exit!")
 
 
