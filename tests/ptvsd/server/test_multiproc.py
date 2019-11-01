@@ -48,7 +48,7 @@ def test_multiprocessing(pyfile, target, run, start_method):
             q.put("spawn!")
             grandchild_pid = a.get()
             backchannel.send(grandchild_pid)
-            assert q.get() == "grandchild", grandchild_pid
+            assert a.get() == "grandchild", grandchild_pid
 
             assert backchannel.receive() == "exit!"
             q.put("exit!")
