@@ -98,6 +98,8 @@ class CaptureOutput(object):
 def wait_for_remaining_output():
     """Waits for all remaining output to be captured and propagated.
     """
+    from ptvsd.common import stacks
+    stacks.dump_after(2)
     for category, instance in CaptureOutput.instances.items():
         log.info("Waiting for remaining {0} of {1}.", category, debuggee.describe())
         instance._worker_thread.join()
