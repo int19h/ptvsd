@@ -347,12 +347,12 @@ class Timeline(object):
         occ.observed = True
         return self._record(occ, block)
 
-    def record_event(self, message, block=True):
-        occ = EventOccurrence(message)
+    def record_event(self, message, session=None, block=True):
+        occ = EventOccurrence(message, session)
         return self._record(occ, block)
 
-    def record_request(self, message, block=True):
-        occ = RequestOccurrence(message)
+    def record_request(self, message, session=None, block=True):
+        occ = RequestOccurrence(message, session)
         occ.observed = True
         return self._record(occ, block)
 
@@ -775,8 +775,8 @@ def _describe_message(message_type, *items):
     return s
 
 
-def Event(event, body=some.object):
-    exp = PatternExpectation("event", event, body)
+def Event(event, body=some.object, session=some.object):
+    exp = PatternExpectation("event", session, event, body)
     items = (("event", event),)
     if body is some.object:
         items += (("\002...", "...\003"),)
@@ -786,8 +786,8 @@ def Event(event, body=some.object):
     return exp
 
 
-def Request(command, arguments=some.object):
-    exp = PatternExpectation("request", command, arguments)
+def Request(command, arguments=some.object, session=some.object):
+    exp = PatternExpectation("request", session, command, arguments)
     items = (("command", command),)
     if arguments is some.object:
         items += (("\002...", "...\003"),)
@@ -797,10 +797,10 @@ def Request(command, arguments=some.object):
     return exp
 
 
-def Response(request, body=some.object):
+def Response(request, body=some.object, session=some.object):
     assert isinstance(request, Expectation) or isinstance(request, RequestOccurrence)
 
-    exp = PatternExpectation("response", request, body)
+    exp = PatternExpectation("response", session, request, body)
     exp.timeline = request.timeline
     exp.has_lower_bound = request.has_lower_bound
 
@@ -810,7 +810,7 @@ def Response(request, body=some.object):
             exp.describe = lambda: fmt("response to {0!r}", request)
             return
         else:
-            items = (("command", request.circumstances[1]),)
+            items = (("command", request.circumstances[2]),)
     else:
         items = (("command", request.command),)
 
@@ -957,9 +957,10 @@ class Occurrence(Expectation):
 
 
 class MessageOccurrence(Occurrence):
-    """An occurrence representing a DAP message (event, request, or response).
+    """An occurrence representing a DAP message (event, request, or response) that
+    occurred in a debug.Session.
 
-    Its circumstances == (self.TYPE, self._key, self._data).
+    Its circumstances == (self.TYPE, self.session, self._key, self._data).
     """
 
     TYPE = None
@@ -968,13 +969,14 @@ class MessageOccurrence(Occurrence):
     Must be defined by subclasses.
     """
 
-    def __init__(self, message):
+    def __init__(self, message, session=None):
         assert self.TYPE
         assert isinstance(message, messaging.Message)
 
         # Assign message first for the benefit of self._data in child classes.
         self.message = message
-        super(MessageOccurrence, self).__init__(self.TYPE, self._key, self._data)
+        self.session = session
+        super(MessageOccurrence, self).__init__(self.TYPE, session, self._key, self._data)
 
     @property
     def seq(self):
@@ -1024,9 +1026,9 @@ class MessageOccurrence(Occurrence):
 class EventOccurrence(MessageOccurrence):
     TYPE = "event"
 
-    def __init__(self, message):
+    def __init__(self, message, session=None):
         assert isinstance(message, messaging.Event)
-        super(EventOccurrence, self).__init__(message)
+        super(EventOccurrence, self).__init__(message, session)
 
     @property
     def event(self):
@@ -1052,9 +1054,9 @@ class EventOccurrence(MessageOccurrence):
 class RequestOccurrence(MessageOccurrence):
     TYPE = "request"
 
-    def __init__(self, message):
+    def __init__(self, message, session=None):
         assert isinstance(message, messaging.Request)
-        super(RequestOccurrence, self).__init__(message)
+        super(RequestOccurrence, self).__init__(message, session)
         self.response = None
         if isinstance(message, messaging.OutgoingRequest):
             self.on_response = message.on_response
@@ -1098,7 +1100,7 @@ class ResponseOccurrence(MessageOccurrence):
         # Assign request first for the benefit of self._key.
         self.request = request_occ
         request_occ.response = self
-        super(ResponseOccurrence, self).__init__(message)
+        super(ResponseOccurrence, self).__init__(message, request_occ.session)
 
     @property
     def body(self):

@@ -38,6 +38,7 @@ def test_multiprocessing(pyfile, target, run, start_method):
         def parent(q, a):
             from debug_me import backchannel
 
+            assert backchannel.receive() == "spawn child!"
             print("spawning child")
             p = multiprocessing.Process(target=child, args=(q, a))
             p.start()
@@ -45,6 +46,7 @@ def test_multiprocessing(pyfile, target, run, start_method):
             backchannel.send(p.pid)
             assert a.get() == ("child", p.pid)
 
+            assert backchannel.receive() == "spawn grandchild!"
             q.put("spawn!")
             grandchild_pid = a.get()
             backchannel.send(grandchild_pid)
@@ -92,12 +94,15 @@ def test_multiprocessing(pyfile, target, run, start_method):
                 a.close()
 
     with debug.Session() as parent_session:
-        parent_backchannel = parent_session.open_backchannel()
+        parent_session.auto_unblock_subprocesses = True
 
+        backchannel = parent_session.open_backchannel()
         with run(parent_session, target(code_to_debug, args=[start_method])):
             pass
 
-        child_pid = parent_backchannel.receive()
+        parent_session.freeze()
+        backchannel.send("spawn child!")
+        child_pid = backchannel.receive()
         expected_child_config = dict(parent_session.config)
         expected_child_config.update(
             {
@@ -113,7 +118,7 @@ def test_multiprocessing(pyfile, target, run, start_method):
             with child_session.start():
                 pass
 
-            grandchild_pid = parent_backchannel.receive()
+            grandchild_pid = backchannel.receive()
             expected_grandchild_config = dict(child_session.config)
             expected_grandchild_config.update(
                 {
@@ -130,7 +135,7 @@ def test_multiprocessing(pyfile, target, run, start_method):
                 assert grandchild_session.config == expected_grandchild_config
                 with grandchild_session.start():
                     pass
-                parent_backchannel.send("exit!")
+                backchannel.send("exit!")
 
 
 @pytest.mark.timeout(30)

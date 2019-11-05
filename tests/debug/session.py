@@ -126,6 +126,19 @@ class Session(object):
         """The actual exit code for the debuggee process, as received from DAP.
         """
 
+        self.auto_unblock_subprocesses = False
+        """If true, any "ptvsd_subprocess" event is automatically handled by creating
+        a dummy new Session that attaches and immediately detaches, allowing that
+        subprocess to start executing user code.
+
+        Any pending wait_for_subprocess() calls take priority over this behavior -
+        i.e. the subprocess with the specified PID is not auto-unblocked.
+        """
+
+        self._waiting_for_subprocesses = {}
+        """PIDs of subprocesses that are being waited for.
+        """
+
         self.config = config.DebugConfig(
             debug_config
             if debug_config is not None
@@ -256,6 +269,15 @@ class Session(object):
     @property
     def ignore_unobserved(self):
         return self.timeline.ignore_unobserved
+
+    def Event(self, *args, **kwargs):
+        return timeline.Event(*args, session=self, **kwargs)
+
+    def Request(self, *args, **kwargs):
+        return timeline.Event(*args, session=self, **kwargs)
+
+    def Response(self, *args, **kwargs):
+        return timeline.Response(*args, session=self, **kwargs)
 
     def open_backchannel(self):
         assert self.backchannel is None
@@ -433,7 +455,7 @@ class Session(object):
             self.proceed()
 
         message = self.channel.send_request(command, arguments)
-        request = self.timeline.record_request(message)
+        request = self.timeline.record_request(message, self)
         if command in ("launch", "attach"):
             self.start_request = request
 
@@ -444,20 +466,33 @@ class Session(object):
         return request
 
     def _process_event(self, event):
-        occ = self.timeline.record_event(event, block=False)
-        if event.event == "exited":
-            self.observe(occ)
-            self.exit_code = event("exitCode", int)
-            assert self.exit_code == self.expected_exit_code
-        elif event.event == "ptvsd_attach":
-            self.observe(occ)
-            pid = event("subProcessId", int)
-            watchdog.register_spawn(
-                pid, fmt("{0}-subprocess-{1}", self.debuggee_id, pid)
-            )
+        occ = self.timeline.record_event(event, self, block=False)
+        process = {
+            "exited": self._process_exited_event,
+            "ptvsd_attach": self._process_ptvsd_attach_event,
+        }.get(event.event, (lambda event, occ: None))
+        process(event, occ)
+
+    def _process_exited_event(self, event, occ):
+        self.observe(occ)
+        self.exit_code = event("exitCode", int)
+        assert self.exit_code == self.expected_exit_code
+
+    def _process_ptvsd_attach_event(self, event, occ):
+        self.observe(occ)
+        pid = event("subProcessId", int)
+        watchdog.register_spawn(pid, fmt("{0}-subprocess-{1}", self.debuggee_id, pid))
+
+        if self.auto_unblock_subprocesses and pid not in self._waiting_for_subprocesses:
+            log.info("Auto-unblocking subprocess with PID={0}.", pid)
+            with Session(config) as session:
+                session.expected_exit_code = None  # don't wait for exit on detach
+                with session.start():
+                    pass
+            log.info("Auto-unblocked subprocess with PID={0}.", pid)
 
     def _process_request(self, request):
-        self.timeline.record_request(request, block=False)
+        self.timeline.record_request(request, self, block=False)
         if request.command == "runInTerminal":
             args = request("args", json.array(unicode))
             cwd = request("cwd", ".")
@@ -524,7 +559,7 @@ class Session(object):
     def all_events(self, event, body=some.object):
         return [
             occ.body
-            for occ in self.timeline.all_occurrences_of(timeline.Event(event, body))
+            for occ in self.timeline.all_occurrences_of(self.Event(event, body))
         ]
 
     def output(self, category):
@@ -541,8 +576,7 @@ class Session(object):
         # Depending on whether it's "noDebug" or not, we either get the "initialized"
         # event, or an immediate response to our request.
         self.timeline.wait_until_realized(
-            timeline.Event("initialized") | timeline.Response(start_request),
-            freeze=True,
+            self.Event("initialized") | self.Response(start_request), freeze=True
         )
 
         if start_request.response is not None:
@@ -654,7 +688,7 @@ class Session(object):
         frame_id = kwargs.pop("frame_id", None)
         if frame_id is None:
             stackTrace_responses = self.all_occurrences_of(
-                timeline.Response(timeline.Request("stackTrace"))
+                self.Response(self.Request("stackTrace"))
             )
             assert stackTrace_responses, (
                 "get_variables() without frame_id requires at least one response "
@@ -685,9 +719,7 @@ class Session(object):
         return self.get_variables(varname, frame_id=frame_id)[0]
 
     def wait_for_next_event(self, event, body=some.object, freeze=True):
-        return self.timeline.wait_for_next(
-            timeline.Event(event, body), freeze=freeze
-        ).body
+        return self.timeline.wait_for_next(self.Event(event, body), freeze=freeze).body
 
     def wait_for_process(self):
         process = self.wait_for_next_event("process", freeze=False)
@@ -744,22 +776,14 @@ class Session(object):
         return Session(self.wait_for_next_event("ptvsd_attach"))
 
     def wait_for_subprocess(self, pid):
-        log.info("Waiting for subprocess with PID={0}...", pid)
-        while True:
-            config = self.wait_for_next_event("ptvsd_attach")
-            self.proceed()
-            sub_pid = config["subProcessId"]
-            if sub_pid == pid:
-                return Session(config)
-
-            # It's not the subprocess we were waiting for, but we still need to attach
-            # to it to allow it to start executing, and then immediately detach.
-            log.info("Unblocking unrelated subprocess with PID={0}.", sub_pid)
-            with Session(config) as session:
-                session.expected_exit_code = None  # don't wait for exit on detach
-                with session.start():
-                    pass
-            log.info("Unblocked unrelated subprocess with PID={0}.", sub_pid)
+        self._waiting_for_subprocesses.add(pid)
+        try:
+            event = self.timeline.wait_until_realized(
+                self.Event("ptvsd_attach", some.dict.containing({"subProcessId": pid}))
+            )
+            return Session(event.body)
+        finally:
+            self._waiting_for_subprocesses.remove(pid)
 
     def wait_for_disconnect(self):
         self.timeline.wait_until_realized(timeline.Mark("disconnect"), freeze=True)
@@ -780,7 +804,7 @@ class Session(object):
             # if self.captured_output:
             #     self.captured_output.wait()
 
-        self.timeline.wait_until_realized(timeline.Event("terminated"))
+        self.timeline.wait_until_realized(self.Event("terminated"))
 
         # FIXME: "exited" event is not properly reported in attach scenarios at the
         # moment, so the exit code is only checked if it's present.
@@ -805,7 +829,7 @@ class Session(object):
         try:
             if not force:
                 self.request("disconnect")
-                self.timeline.wait_until_realized(timeline.Event("terminated"))
+                self.timeline.wait_until_realized(self.Event("terminated"))
         except messaging.JsonIOError:
             pass
         finally:

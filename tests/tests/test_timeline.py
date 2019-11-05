@@ -146,7 +146,7 @@ def test_event(make_timeline):
 
     assert event == event_exp
     assert event.message is event_msg
-    assert event.circumstances == ("event", event_msg.event, event_msg.body)
+    assert event.circumstances == ("event", None, event_msg.event, event_msg.body)
 
     with timeline.frozen():
         assert timeline.last is event
@@ -168,6 +168,7 @@ def test_request_response(make_timeline, outcome):
     assert request.arguments == request_msg.arguments
     assert request.circumstances == (
         "request",
+        None,
         request_msg.command,
         request_msg.arguments,
     )
@@ -188,7 +189,7 @@ def test_request_response(make_timeline, outcome):
         assert response.success
     else:
         assert not response.success
-    assert response.circumstances == ("response", request, response_msg.body)
+    assert response.circumstances == ("response", None, request, response_msg.body)
 
     assert response == Response(request, response_msg.body)
     assert response == Response(request, some.object)
