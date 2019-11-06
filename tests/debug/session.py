@@ -17,7 +17,7 @@ import ptvsd.adapter
 from ptvsd.common import compat, fmt, json, log, messaging, options, sockets, util
 from ptvsd.common.compat import unicode
 import tests
-from tests import code, timeline, watchdog
+from tests import code, timelines, watchdog
 from tests.debug import comms, config, output
 from tests.patterns import some
 
@@ -76,7 +76,7 @@ class Session(object):
 
     _counter = itertools.count(1)
 
-    def __init__(self, debug_config=None):
+    def __init__(self, debug_config=None, timeline=None):
         assert Session.tmpdir is not None
         watchdog.start()
 
@@ -166,18 +166,18 @@ class Session(object):
         self.tmpdir = Session.tmpdir / str(self)
         self.tmpdir.ensure(dir=True)
 
-        self.timeline = timeline.Timeline(str(self))
+        self.timeline = timelines.Timeline(str(self))
         self.ignore_unobserved.extend(
             [
-                timeline.Event("module"),
-                timeline.Event("continued"),
-                # timeline.Event("exited"),
-                # timeline.Event("terminated"),
-                timeline.Event("thread", some.dict.containing({"reason": "started"})),
-                timeline.Event("thread", some.dict.containing({"reason": "exited"})),
-                timeline.Event("output", some.dict.containing({"category": "stdout"})),
-                timeline.Event("output", some.dict.containing({"category": "stderr"})),
-                timeline.Event("output", some.dict.containing({"category": "console"})),
+                timelines.Event("module"),
+                timelines.Event("continued"),
+                # timelines.Event("exited"),
+                # timelines.Event("terminated"),
+                timelines.Event("thread", some.dict.containing({"reason": "started"})),
+                timelines.Event("thread", some.dict.containing({"reason": "exited"})),
+                timelines.Event("output", some.dict.containing({"category": "stdout"})),
+                timelines.Event("output", some.dict.containing({"category": "stderr"})),
+                timelines.Event("output", some.dict.containing({"category": "console"})),
             ]
         )
 
@@ -270,14 +270,21 @@ class Session(object):
     def ignore_unobserved(self):
         return self.timeline.ignore_unobserved
 
+    def mark(self, id, **kwargs):
+        print(self.timeline.mark)
+        return self.timeline.mark(id, session=self, **kwargs)
+
+    def Mark(self, *args, **kwargs):
+        return timelines.Mark(*args, session=self, **kwargs)
+
     def Event(self, *args, **kwargs):
-        return timeline.Event(*args, session=self, **kwargs)
+        return timelines.Event(*args, session=self, **kwargs)
 
     def Request(self, *args, **kwargs):
-        return timeline.Event(*args, session=self, **kwargs)
+        return timelines.Request(*args, session=self, **kwargs)
 
     def Response(self, *args, **kwargs):
-        return timeline.Response(*args, session=self, **kwargs)
+        return timelines.Response(*args, session=self, **kwargs)
 
     def open_backchannel(self):
         assert self.backchannel is None
@@ -525,7 +532,7 @@ class Session(object):
                 pass
 
     def _process_disconnect(self):
-        self.timeline.mark("disconnect", block=False)
+        self.mark("disconnect", block=False)
 
     def _start_channel(self, stream):
         handlers = messaging.MessageHandlers(
@@ -786,7 +793,7 @@ class Session(object):
             self._waiting_for_subprocesses.remove(pid)
 
     def wait_for_disconnect(self):
-        self.timeline.wait_until_realized(timeline.Mark("disconnect"), freeze=True)
+        self.timeline.wait_until_realized(self.Mark("disconnect"), freeze=True)
 
     def wait_for_exit(self):
         if self.debuggee is not None:

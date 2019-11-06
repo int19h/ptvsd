@@ -341,8 +341,8 @@ class Timeline(object):
                 self._recorded_new.notify_all()
                 self._record_queue.task_done()
 
-    def mark(self, id, block=True):
-        occ = Occurrence("mark", id)
+    def mark(self, id, session=None, block=True):
+        occ = Occurrence("mark", id, session)
         occ.id = id
         occ.observed = True
         return self._record(occ, block)
@@ -750,8 +750,8 @@ class PatternExpectation(Expectation):
         return self.describe()
 
 
-def Mark(id):
-    return PatternExpectation("mark", id)
+def Mark(id, session=some.object):
+    return PatternExpectation("mark", id, session)
 
 
 def _describe_message(message_type, *items):

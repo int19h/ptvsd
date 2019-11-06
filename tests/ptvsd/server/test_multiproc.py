@@ -12,7 +12,7 @@ from ptvsd.common import messaging
 from tests import debug
 from tests.debug import runners
 from tests.patterns import some
-from tests.timeline import Event, Request
+from tests.timelines import Event, Request
 
 
 # pytestmark = pytest.mark.skip("https://github.com/microsoft/ptvsd/issues/1706")

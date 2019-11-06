@@ -8,7 +8,7 @@ import pytest
 
 from tests import debug
 from tests.patterns import some
-from tests.timeline import Event
+from tests.timelines import Event
 
 str_matching_ArithmeticError = some.str.matching(r"(.+\.)?ArithmeticError")
 

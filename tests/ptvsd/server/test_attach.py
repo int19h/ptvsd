@@ -9,7 +9,7 @@ import pytest
 from tests import debug
 from tests.debug import runners, targets
 from tests.patterns import some
-from tests.timeline import Event
+from tests.timelines import Event
 
 
 @pytest.mark.parametrize("stop_method", ["break_into_debugger", "pause"])

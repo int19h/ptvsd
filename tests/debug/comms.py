@@ -10,7 +10,7 @@ import threading
 import socket
 
 from ptvsd.common import fmt, log, messaging, sockets
-from tests.timeline import Request, Response
+from tests.timelines import Request, Response
 
 
 class BackChannel(object):

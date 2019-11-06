@@ -78,7 +78,7 @@ class Some(object):
     # only substitute for another object that is normally JSON-serializable. But
     # for patterns, we want <...> in the logs, not'"<...>". Thus, we insert dummy
     # marker chars here, such that it looks like "\002<...>\003" in serialized JSON -
-    # and then tests.timeline._describe_message does a string substitution on the
+    # and then tests.timelines._describe_message does a string substitution on the
     # result to strip out '"\002' and '\003"'.
     def __getstate__(self):
         return "\002" + repr(self) + "\003"

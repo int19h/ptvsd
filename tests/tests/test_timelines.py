@@ -13,7 +13,7 @@ import time
 
 from ptvsd.common import log, messaging
 from tests.patterns import some
-from tests.timeline import Timeline, Mark, Event, Request, Response
+from tests.timelines import Timeline, Mark, Event, Request, Response
 
 
 class MessageFactory(object):
