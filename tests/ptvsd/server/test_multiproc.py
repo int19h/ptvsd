@@ -38,7 +38,6 @@ def test_multiprocessing(pyfile, target, run, start_method):
         def parent(q, a):
             from debug_me import backchannel
 
-            assert backchannel.receive() == "spawn child!"
             print("spawning child")
             p = multiprocessing.Process(target=child, args=(q, a))
             p.start()
@@ -46,14 +45,9 @@ def test_multiprocessing(pyfile, target, run, start_method):
             backchannel.send(p.pid)
             assert a.get() == ("child", p.pid)
 
-            assert backchannel.receive() == "spawn grandchild!"
-            q.put("spawn!")
             grandchild_pid = a.get()
             backchannel.send(grandchild_pid)
             assert a.get() == ("grandchild", grandchild_pid)
-
-            assert backchannel.receive() == "exit!"
-            q.put("exit!")
 
             print("waiting for child")
             p.join()
@@ -61,8 +55,8 @@ def test_multiprocessing(pyfile, target, run, start_method):
         def child(q, a):
             print("entering child")
             a.put(("child", os.getpid()))
+            print()  # @child
 
-            assert q.get() == "spawn!"
             print("spawning grandchild")
             p = multiprocessing.Process(target=grandchild, args=(q, a))
             p.start()
@@ -76,8 +70,7 @@ def test_multiprocessing(pyfile, target, run, start_method):
         def grandchild(q, a):
             print("entering grandchild")
             a.put(("grandchild", os.getpid()))
-
-            assert q.get() == "exit!"
+            print()  # @grandchild
             print("leaving grandchild")
 
         if __name__ == "__main__":
@@ -94,14 +87,23 @@ def test_multiprocessing(pyfile, target, run, start_method):
                 a.close()
 
     with debug.Session() as parent_session:
-        parent_session.auto_unblock_subprocesses = True
-
+        timeline = parent_session.timeline
         backchannel = parent_session.open_backchannel()
+
+        @timeline.reaction_to(Event("ptvsd_attach"))
+        def attach_to_subprocess(attach_event):
+            with timeline.unfrozen():
+                child_session = debug.Session(attach_event.body, parent=parent_session)
+                with child_session.start():
+                    child_session.set_breakpoints(code_to_debug, all)
+
         with run(parent_session, target(code_to_debug, args=[start_method])):
             pass
 
-        parent_session.freeze()
-        backchannel.send("spawn child!")
+        stopped = timeline.wait_until_realized(
+            Event("stopped", some.dict.containing({"reason": "breakpoint"}))
+        )
+        child_session = stopped.session
         child_pid = backchannel.receive()
         expected_child_config = dict(parent_session.config)
         expected_child_config.update(
@@ -112,30 +114,25 @@ def test_multiprocessing(pyfile, target, run, start_method):
                 "port": some.int,
             }
         )
+        assert child_session.config == expected_child_config
+        child_session.request_continue()
 
-        with parent_session.wait_for_subprocess(child_pid) as child_session:
-            assert child_session.config == expected_child_config
-            with child_session.start():
-                pass
-
-            grandchild_pid = backchannel.receive()
-            expected_grandchild_config = dict(child_session.config)
-            expected_grandchild_config.update(
-                {
-                    "request": "attach",
-                    "subProcessId": grandchild_pid,
-                    "host": some.str,
-                    "port": some.int,
-                }
-            )
-
-            with child_session.wait_for_subprocess(
-                grandchild_pid
-            ) as grandchild_session:
-                assert grandchild_session.config == expected_grandchild_config
-                with grandchild_session.start():
-                    pass
-                backchannel.send("exit!")
+        stopped = timeline.wait_until_realized(
+            stopped >> Event("stopped", some.dict.containing({"reason": "breakpoint"}))
+        )
+        grandchild_session = stopped.session
+        grandchild_pid = backchannel.receive()
+        expected_grandchild_config = dict(child_session.config)
+        expected_grandchild_config.update(
+            {
+                "request": "attach",
+                "subProcessId": grandchild_pid,
+                "host": some.str,
+                "port": some.int,
+            }
+        )
+        assert grandchild_session.config == expected_grandchild_config
+        grandchild_session.request_continue()
 
 
 @pytest.mark.timeout(30)

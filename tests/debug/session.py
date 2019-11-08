@@ -76,12 +76,17 @@ class Session(object):
 
     _counter = itertools.count(1)
 
-    def __init__(self, debug_config=None, timeline=None):
+    def __init__(self, debug_config=None, parent=None):
         assert Session.tmpdir is not None
         watchdog.start()
 
         self.id = next(Session._counter)
-        log.info("Starting {0}", self)
+        if parent is None:
+            log.info("Starting {0}", self)
+        else:
+            log.info("Starting child {0} of {1}", self, parent)
+
+        self.is_closed = False
 
         self.client_id = "vscode"
 
@@ -126,19 +131,6 @@ class Session(object):
         """The actual exit code for the debuggee process, as received from DAP.
         """
 
-        self.auto_unblock_subprocesses = False
-        """If true, any "ptvsd_subprocess" event is automatically handled by creating
-        a dummy new Session that attaches and immediately detaches, allowing that
-        subprocess to start executing user code.
-
-        Any pending wait_for_subprocess() calls take priority over this behavior -
-        i.e. the subprocess with the specified PID is not auto-unblocked.
-        """
-
-        self._waiting_for_subprocesses = {}
-        """PIDs of subprocesses that are being waited for.
-        """
-
         self.config = config.DebugConfig(
             debug_config
             if debug_config is not None
@@ -166,18 +158,23 @@ class Session(object):
         self.tmpdir = Session.tmpdir / str(self)
         self.tmpdir.ensure(dir=True)
 
-        self.timeline = timelines.Timeline(str(self))
+        self.parent = parent
+        self.children = []
+        self.timeline = (
+            timelines.Timeline(str(self)) if parent is None else parent.timeline
+        )
+
         self.ignore_unobserved.extend(
             [
-                timelines.Event("module"),
-                timelines.Event("continued"),
-                # timelines.Event("exited"),
-                # timelines.Event("terminated"),
-                timelines.Event("thread", some.dict.containing({"reason": "started"})),
-                timelines.Event("thread", some.dict.containing({"reason": "exited"})),
-                timelines.Event("output", some.dict.containing({"category": "stdout"})),
-                timelines.Event("output", some.dict.containing({"category": "stderr"})),
-                timelines.Event("output", some.dict.containing({"category": "console"})),
+                self.Event("module"),
+                self.Event("continued"),
+                # self.Event("exited"),
+                # self.Event("terminated"),
+                self.Event("thread", some.dict.containing({"reason": "started"})),
+                self.Event("thread", some.dict.containing({"reason": "exited"})),
+                self.Event("output", some.dict.containing({"category": "stdout"})),
+                self.Event("output", some.dict.containing({"category": "stderr"})),
+                self.Event("output", some.dict.containing({"category": "console"})),
             ]
         )
 
@@ -202,6 +199,9 @@ class Session(object):
         self.spawn_debuggee = lambda *args, **kwargs: spawn_debuggee(*args, **kwargs)
         self.spawn_debuggee.env = util.Env()
 
+        if parent is not None:
+            parent.children.append(self)
+
     def __str__(self):
         return fmt("Session-{0}", self.id)
 
@@ -217,22 +217,34 @@ class Session(object):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.is_closed:
+            return
+        if exc_type is not None:
+            # Log the error, in case another one happens during shutdown.
+            log.exception(exc_info=(exc_type, exc_val, exc_tb))
+        self.close(exc_type is None)
+
+    def close(self, graceful=True):
+        if self.is_closed:
+            return
+        self.is_closed = True
+
+        for child in self.children:
+            child.close(graceful)
+
         if self.timeline.is_frozen:
             self.timeline.unfreeze()
 
         # Only wait for exit if there was no exception in the test - if there was one,
         # the debuggee might still be waiting for further requests.
-        if exc_type is None:
+        if graceful:
             # If expected_exit_code is set to None, the debuggee is not expected to
             # exit after this Session is closed (e.g. because another Session will
             # attach to it later on).
             if self.expected_exit_code is not None:
                 self.wait_for_exit()
-        else:
-            # Log the error, in case another one happens during shutdown.
-            log.exception(exc_info=(exc_type, exc_val, exc_tb))
 
-        if exc_type is None:
+        if graceful:
             self.disconnect()
             self.timeline.close()
         else:
@@ -473,30 +485,23 @@ class Session(object):
         return request
 
     def _process_event(self, event):
-        occ = self.timeline.record_event(event, self, block=False)
         process = {
             "exited": self._process_exited_event,
             "ptvsd_attach": self._process_ptvsd_attach_event,
-        }.get(event.event, (lambda event, occ: None))
-        process(event, occ)
+        }.get(event.event, None)
+        if process is not None:
+            process(event)
+        occ = self.timeline.record_event(event, self, block=False)
+        if process is not None:
+            self.observe(occ)
 
-    def _process_exited_event(self, event, occ):
-        self.observe(occ)
+    def _process_exited_event(self, event):
         self.exit_code = event("exitCode", int)
         assert self.exit_code == self.expected_exit_code
 
-    def _process_ptvsd_attach_event(self, event, occ):
-        self.observe(occ)
+    def _process_ptvsd_attach_event(self, event):
         pid = event("subProcessId", int)
         watchdog.register_spawn(pid, fmt("{0}-subprocess-{1}", self.debuggee_id, pid))
-
-        if self.auto_unblock_subprocesses and pid not in self._waiting_for_subprocesses:
-            log.info("Auto-unblocking subprocess with PID={0}.", pid)
-            with Session(config) as session:
-                session.expected_exit_code = None  # don't wait for exit on detach
-                with session.start():
-                    pass
-            log.info("Auto-unblocked subprocess with PID={0}.", pid)
 
     def _process_request(self, request):
         self.timeline.record_request(request, self, block=False)
@@ -783,14 +788,10 @@ class Session(object):
         return Session(self.wait_for_next_event("ptvsd_attach"))
 
     def wait_for_subprocess(self, pid):
-        self._waiting_for_subprocesses.add(pid)
-        try:
-            event = self.timeline.wait_until_realized(
-                self.Event("ptvsd_attach", some.dict.containing({"subProcessId": pid}))
-            )
-            return Session(event.body)
-        finally:
-            self._waiting_for_subprocesses.remove(pid)
+        event = self.timeline.wait_until_realized(
+            self.Event("ptvsd_attach", some.dict.containing({"subProcessId": pid}))
+        )
+        return Session(event.body)
 
     def wait_for_disconnect(self):
         self.timeline.wait_until_realized(self.Mark("disconnect"), freeze=True)

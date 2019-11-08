@@ -35,6 +35,7 @@ class Timeline(object):
         self._finalized = threading.Event()
         self._recorded_new = threading.Condition()
         self._record_queue = queue.Queue()
+        self._reactors = []
 
         self._recorder_thread = threading.Thread(
             target=self._recorder_worker, name=fmt("{0} recorder", self)
@@ -179,6 +180,9 @@ class Timeline(object):
                 while True:
                     self._recorded_new.wait()
                     with self.frozen():
+                        # Let the reactors observe and react.
+                        for reactor in self._reactors:
+                            reactor.react()
                         result = condition()
                         if result:
                             return result
@@ -301,6 +305,9 @@ class Timeline(object):
             message += "."
 
         log.info("{0}", message)
+
+    def reaction_to(self, expectation):
+        return lambda reaction: Reactor(self, expectation, reaction)
 
     def _record(self, occurrence, block=True):
         assert isinstance(occurrence, Occurrence)
@@ -976,7 +983,9 @@ class MessageOccurrence(Occurrence):
         # Assign message first for the benefit of self._data in child classes.
         self.message = message
         self.session = session
-        super(MessageOccurrence, self).__init__(self.TYPE, session, self._key, self._data)
+        super(MessageOccurrence, self).__init__(
+            self.TYPE, session, self._key, self._data
+        )
 
     @property
     def seq(self):
@@ -1137,3 +1146,23 @@ def earliest_of(occurrences):
 
 def latest_of(occurrences):
     return max(occurrences, key=lambda occ: occ.index)
+
+
+class Reactor(object):
+    def __init__(self, timeline, expectation, reaction):
+        self.timeline = timeline
+        self.expectation = expectation
+        self.reaction = reaction
+        self.last_occurrence = timeline.beginning
+        timeline._reactors.append(self)
+
+    def stop(self):
+        self.timeline._reactors.remove(self)
+
+    def react(self):
+        exp = self.last_occurrence >> self.expectation
+        for reasons in exp.test(self.timeline.beginning, self.timeline.last):
+            occ = latest_of(reasons.values())
+            log.info("Reacting to {0!r} == {1!r}", occ, self.expectation)
+            self.last_occurrence = occ
+            self.reaction(occ)
